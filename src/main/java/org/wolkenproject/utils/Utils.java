@@ -1,5 +1,6 @@
 package org.wolkenproject.utils;
 
+import org.wolkenproject.core.Transaction;
 import org.wolkenproject.encoders.Base16;
 import org.wolkenproject.encoders.Base58;
 
@@ -10,7 +11,10 @@ import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class Utils {
     public static final byte[] concatenate(byte[]...arrays)
@@ -458,5 +462,17 @@ public class Utils {
         for (int i = 0; i < numBytes; i ++) {
             stream.read();
         }
+    }
+
+    public static byte[] calculateMerkleRoot(byte a[], byte b[]) {
+        return HashUtil.sha256d(Utils.concatenate(a, b));
+    }
+
+    public static byte[] calculateMerkleRoot(Queue<byte[]> hashes) {
+        while (hashes.size() > 1) {
+            hashes.add(calculateMerkleRoot(hashes.poll(), hashes.poll()));
+        }
+
+        return hashes.poll();
     }
 }

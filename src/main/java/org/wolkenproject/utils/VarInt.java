@@ -109,6 +109,17 @@ public class VarInt {
                 stream.write(bytes[4]);
                 stream.write(bytes[5]);
                 stream.write(bytes[6]);
+            } else if (bits <= 64) {
+                stream.write(7);
+                byte bytes[] = Utils.takeApartInt48(integer);
+                stream.write(bytes[0]);
+                stream.write(bytes[1]);
+                stream.write(bytes[2]);
+                stream.write(bytes[3]);
+                stream.write(bytes[4]);
+                stream.write(bytes[5]);
+                stream.write(bytes[6]);
+                stream.write(bytes[7]);
             }
         } else {
             if (bits <= 5) {
@@ -217,5 +228,77 @@ public class VarInt {
 
             return Utils.makeLong(Utils.conditionalExpand(8, Utils.concatenate(new byte[] {(byte) value}, remaining)));
         }
+    }
+
+    public static int sizeOfCompactUin32(int integer, boolean preserveAllBits) {
+        long bits = Utils.numBitsRequired(integer);
+
+        if (preserveAllBits) {
+            if (bits <= 8) {
+                return 2;
+            } else if (bits <= 16) {
+                return 3;
+            } else if (bits <= 24) {
+                return 4;
+            } else if (bits <= 32) {
+                return 5;
+            }
+        } else {
+            if (bits <= 6) {
+                return 1;
+            } else if (bits <= 14) {
+                return 2;
+            } else if (bits <= 22) {
+                return 3;
+            } else if (bits <= 30) {
+                return 4;
+            }
+        }
+
+        return 0;
+    }
+
+    public static int sizeOfCompactUin64(long integer, boolean preserveAllBits) {
+        long bits = Utils.numBitsRequired(integer);
+
+        if (preserveAllBits) {
+            if (bits <= 8) {
+                return 2;
+            } else if (bits <= 16) {
+                return 3;
+            } else if (bits <= 24) {
+                return 4;
+            } else if (bits <= 32) {
+                return 5;
+            } else if (bits <= 40) {
+                return 6;
+            } else if (bits <= 48) {
+                return 7;
+            } else if (bits <= 56) {
+                return 8;
+            } else if (bits <= 64) {
+                return 9;
+            }
+        } else {
+            if (bits <= 5) {
+                return 1;
+            } else if (bits <= 13) {
+                return 2;
+            } else if (bits <= 21) {
+                return 3;
+            } else if (bits <= 29) {
+                return 4;
+            } else if (bits <= 37) {
+                return 5;
+            } else if (bits <= 45) {
+                return 6;
+            } else if (bits <= 53) {
+                return 7;
+            } else if (bits <= 61) {
+                return 8;
+            }
+        }
+
+        return 0;
     }
 }

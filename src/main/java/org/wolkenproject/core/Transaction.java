@@ -1,12 +1,15 @@
 package org.wolkenproject.core;
 
-import org.wolkenproject.crypto.Key;
+import org.wolkenproject.core.events.AccountBalanceUpdateEvent;
+import org.wolkenproject.core.events.AliasedAccountBalanceUpdateEvent;
+import org.wolkenproject.core.events.NewAccountEvent;
 import org.wolkenproject.crypto.Keypair;
 import org.wolkenproject.crypto.Signature;
 import org.wolkenproject.crypto.ec.RecoverableSignature;
 import org.wolkenproject.exceptions.WolkenException;
 import org.wolkenproject.serialization.SerializableI;
 import org.wolkenproject.serialization.SerializationFactory;
+import org.wolkenproject.utils.ChainMath;
 import org.wolkenproject.utils.HashUtil;
 import org.wolkenproject.utils.VarInt;
 
@@ -14,7 +17,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Array;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 public abstract class Transaction extends SerializableI implements Comparable<Transaction> {
     public static int UniqueIdentifierLength = 32;
@@ -36,6 +41,11 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         ;
     }
 
+    // this is not serialized
+    private byte txid[];
+    // this is not serialized
+    protected List<Event> stateChangeEvents;
+
     // can be represented by 1 - 4 bytes
     // version = 1 skips flags all-together
 
@@ -53,11 +63,40 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
     public abstract long getTransactionFee();
     public abstract long getMaxUnitCost();
     public abstract byte[] getPayload();
-    public abstract boolean verify() throws WolkenException;
+    /*
+        shallow checks of the validity of a transactions
+        check the received is valid
+        check the sender is valid
+        check the signature is valid
+        check the sender has funds
+     */
+    public abstract boolean shallowVerify() throws WolkenException;
     public abstract Address getSender() throws WolkenException;
     public abstract Address getRecipient();
     public abstract boolean hasMultipleSenders();
     public abstract boolean hasMultipleRecipients();
+    public abstract long calculateSize();
+    /*
+        deep checks of the validity of a transactions
+        if the transaction contains a payload, the pa
+        -yload would be executed and if errors are th
+        -rown without being caught then the transacti
+        -on is deemed invalid.
+     */
+    public abstract boolean verify(Block block, int blockHeight, long fees);
+    /*
+        return all the changes this transaction will
+        cause to the global state.
+     */
+    public abstract List<Event> getStateChange(Block block, int blockHeight, long fees) throws WolkenException;
+
+    protected void createAccountIfDoesNotExist(byte address[], List<Event> stateChangeEvents) {
+        if (Context.getInstance().getDatabase().checkAccountExists(address)) {
+            return;
+        }
+
+        stateChangeEvents.add(new NewAccountEvent(address));
+    }
 
     public Transaction sign(Keypair keypair) throws WolkenException {
         // this includes the version bytes
@@ -82,7 +121,11 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
     }
 
     public byte[] getTransactionID() {
-        return HashUtil.sha256d(asByteArray());
+        if (txid == null) {
+            txid = HashUtil.sha256d(asByteArray());
+        }
+
+        return txid;
     }
 
     @Override
@@ -158,7 +201,7 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
-        public boolean verify() {
+        public boolean shallowVerify() {
             // this is not 100% necessary
             return dump.length <= 8192;
         }
@@ -181,6 +224,27 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         @Override
         public boolean hasMultipleRecipients() {
             return false;
+        }
+
+        @Override
+        public long calculateSize() {
+            return VarInt.sizeOfCompactUin32(getVersion(), false) + 20 + dump.length;
+        }
+
+        @Override
+        public boolean verify(Block block, int blockHeight, long fees) {
+            return value == ( ChainMath.getReward(blockHeight) + fees );
+        }
+
+        @Override
+        public List<Event> getStateChange(Block block, int blockHeight, long fees) {
+            if (stateChangeEvents == null) {
+                stateChangeEvents = new ArrayList<>();
+                createAccountIfDoesNotExist(recipient, stateChangeEvents);
+                stateChangeEvents.add(new AccountBalanceUpdateEvent(recipient, value));
+            }
+
+            return stateChangeEvents;
         }
 
         @Override
@@ -227,15 +291,18 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
     public static final class RegisterAliasTransaction extends Transaction {
         // nonce
         private long nonce;
+        // alias
+        private long alias;
         // signature of the sender
         private RecoverableSignature signature;
 
         private RegisterAliasTransaction() {
-            this(0);
+            this(0, 0);
         }
 
-        private RegisterAliasTransaction(long nonce) {
+        private RegisterAliasTransaction(long nonce, long alias) {
             this.nonce      = nonce;
+            this.alias      = alias;
             this.signature  = new RecoverableSignature();
         }
 
@@ -265,7 +332,7 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
-        public boolean verify() throws WolkenException {
+        public boolean shallowVerify() throws WolkenException {
             // this is not 100% necessary
             // a transfer of 0 with a fee of 0 is not allowed
             return
@@ -297,6 +364,31 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
+        public long calculateSize() {
+            return
+                    VarInt.sizeOfCompactUin32(getVersion(), false) +
+                    VarInt.sizeOfCompactUin64(nonce, false) +
+                    VarInt.sizeOfCompactUin64(alias, false) + 65;
+        }
+
+        @Override
+        public boolean verify(Block block, int blockHeight, long fees) {
+            return false;
+        }
+
+        @Override
+        public List<Event> getStateChange(Block block, int blockHeight, long fees) throws WolkenException {
+            if (stateChangeEvents == null) {
+                stateChangeEvents = new ArrayList<>();
+                Address sender = getSender();
+                createAccountIfDoesNotExist(sender.getRaw(), stateChangeEvents);
+                stateChangeEvents.add(new AliasRegistrationEvent(sender.getRaw(), alias));
+            }
+
+            return stateChangeEvents;
+        }
+
+        @Override
         protected void setSignature(Signature signature) throws WolkenException {
             if (signature instanceof RecoverableSignature) {
                 this.signature = (RecoverableSignature) signature;
@@ -307,17 +399,19 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
 
         @Override
         protected Transaction copyForSignature() {
-            return new RegisterAliasTransaction(nonce);
+            return new RegisterAliasTransaction(nonce, alias);
         }
 
         @Override
         public void write(OutputStream stream) throws IOException, WolkenException {
             signature.write(stream);
+            VarInt.writeCompactUInt64(alias, false, stream);
         }
 
         @Override
         public void read(InputStream stream) throws IOException, WolkenException {
             signature.read(stream);
+            alias = VarInt.readCompactUInt64(false, stream);
         }
 
         @Override
@@ -385,14 +479,16 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
-        public boolean verify() throws WolkenException {
+        public boolean shallowVerify() throws WolkenException {
             // a transfer of 0 with a fee of 0 is not allowed
             return
                     (getTransactionValue() + getTransactionFee()) != 0 &&
-                    (Context.getInstance().getDatabase().getAccount(getSender().getRaw()).getNonce() + 1) == nonce &&
                     (signature.getR().length == 32) &&
                     (signature.getS().length == 32) &&
-                    getSender() != null;
+                    getSender() != null &&
+                    (Context.getInstance().getDatabase().getAccount(getSender().getRaw()).getNonce() + 1) == nonce &&
+                    (Context.getInstance().getDatabase().getAccount(getSender().getRaw()).getBalance()) >= (value + fee);
+
         }
 
         @Override
@@ -413,6 +509,32 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         @Override
         public boolean hasMultipleRecipients() {
             return false;
+        }
+
+        @Override
+        public long calculateSize() {
+            return VarInt.sizeOfCompactUin32(getVersion(), false) + 20 +
+                    VarInt.sizeOfCompactUin64(value, false) +
+                    VarInt.sizeOfCompactUin64(fee, false) +
+                    VarInt.sizeOfCompactUin64(nonce, false) +
+                    65;
+        }
+
+        @Override
+        public boolean verify(Block block, int blockHeight, long fees) {
+            return false;
+        }
+
+        @Override
+        public List<Event> getStateChange(Block block, int blockHeight, long fees) throws WolkenException {
+            if (stateChangeEvents == null) {
+                stateChangeEvents = new ArrayList<>();
+                Address sender = getSender();
+                createAccountIfDoesNotExist(recipient, stateChangeEvents);
+                stateChangeEvents.add(new AccountBalanceUpdateEvent(sender.getRaw(), value));
+            }
+
+            return stateChangeEvents;
         }
 
         @Override
@@ -514,14 +636,15 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
-        public boolean verify() throws WolkenException {
+        public boolean shallowVerify() throws WolkenException {
             // a transfer of 0 with a fee of 0 is not allowed
             return
-                    (getTransactionValue() + getTransactionFee()) != 0 &&
-                    (Context.getInstance().getDatabase().getAccount(getSender().getRaw()).getNonce() + 1) == nonce &&
+            (getTransactionValue() + getTransactionFee()) != 0 &&
                     (signature.getR().length == 32) &&
                     (signature.getS().length == 32) &&
-                    getSender() != null;
+                    getSender() != null &&
+                    (Context.getInstance().getDatabase().getAccount(getSender().getRaw()).getNonce() + 1) == nonce &&
+                    (Context.getInstance().getDatabase().getAccount(getSender().getRaw()).getBalance()) >= (value + fee);
         }
 
         @Override
@@ -542,6 +665,31 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         @Override
         public boolean hasMultipleRecipients() {
             return false;
+        }
+
+        @Override
+        public long calculateSize() {
+            return VarInt.sizeOfCompactUin32(getVersion(), false) +
+                    VarInt.sizeOfCompactUin64(alias, false) +
+                    VarInt.sizeOfCompactUin64(value, false) +
+                    VarInt.sizeOfCompactUin64(fee, false) +
+                    VarInt.sizeOfCompactUin64(nonce, false) +
+                    65;
+        }
+
+        @Override
+        public boolean verify(Block block, int blockHeight, long fees) {
+            return false;
+        }
+
+        @Override
+        public List<Event> getStateChange(Block block, int blockHeight, long fees) throws WolkenException {
+            if (stateChangeEvents == null) {
+                stateChangeEvents = new ArrayList<>();
+                stateChangeEvents.add(new AccountBalanceUpdateEvent(getRecipient().getRaw(), value));
+            }
+
+            return stateChangeEvents;
         }
 
         @Override
@@ -644,7 +792,7 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
-        public boolean verify() {
+        public boolean shallowVerify() {
             return false;
         }
 
@@ -670,6 +818,28 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         @Override
         public boolean hasMultipleRecipients() {
             return false;
+        }
+
+        @Override
+        public long calculateSize() {
+            return VarInt.sizeOfCompactUin32(getVersion(), false) +
+                    VarInt.sizeOfCompactUin64(value, false) +
+                    VarInt.sizeOfCompactUin64(unitCost, false) +
+                    VarInt.sizeOfCompactUin64(fee, false) +
+                    VarInt.sizeOfCompactUin64(nonce, false) +
+                    VarInt.sizeOfCompactUin64(payload.length, false) +
+                    payload.length +
+                    65;
+        }
+
+        @Override
+        public boolean verify(Block block, int blockHeight, long fees) {
+            return false;
+        }
+
+        @Override
+        public List<Event> getStateChange(Block block, int blockHeight, long fees) throws WolkenException {
+            return null;
         }
 
         @Override
@@ -757,7 +927,7 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         }
 
         @Override
-        public boolean verify() {
+        public boolean shallowVerify() {
             return false;
         }
 
@@ -779,6 +949,21 @@ public abstract class Transaction extends SerializableI implements Comparable<Tr
         @Override
         public boolean hasMultipleRecipients() {
             return false;
+        }
+
+        @Override
+        public long calculateSize() {
+            return 0;
+        }
+
+        @Override
+        public boolean verify(Block block, int blockHeight, long fees) {
+            return false;
+        }
+
+        @Override
+        public List<Event> getStateChange(Block block, int blockHeight, long fees) throws WolkenException {
+            return null;
         }
 
         @Override

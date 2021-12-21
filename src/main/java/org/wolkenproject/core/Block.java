@@ -3,17 +3,16 @@ package org.wolkenproject.core;
 import org.wolkenproject.exceptions.WolkenException;
 import org.wolkenproject.serialization.SerializableI;
 import org.wolkenproject.utils.ChainMath;
-import org.wolkenproject.utils.HashUtil;
 import org.wolkenproject.utils.Utils;
+import org.wolkenproject.utils.VarInt;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.util.*;
-import java.util.concurrent.LinkedBlockingQueue;
 
-public class Block extends BlockHeader {
+public class Block extends BlockHeader implements Iterable<Transaction> {
     private static BigInteger LargestHash = BigInteger.ONE.shiftLeft(256);
     public static int UniqueIdentifierLength = 32;
     private Set<Transaction>   transactions;
@@ -28,8 +27,13 @@ public class Block extends BlockHeader {
         transactions = new LinkedHashSet<>();
     }
 
-    public final int countLength() {
-        return asByteArray().length;
+    public final int calculateSize() {
+        int transactionLength = 0;
+        for (Transaction transaction : transactions) {
+            transactionLength += transaction.calculateSize();
+        }
+
+        return BlockHeader.Size + VarInt.sizeOfCompactUin32(transactions.size(), false) + transactionLength;
     }
 
     /*
@@ -39,25 +43,70 @@ public class Block extends BlockHeader {
         return new BlockHeader(getVersion(), getTimestamp(), getParentHash(), getMerkleRoot(), getBits(), getNonce());
     }
 
-    protected byte[] calculateMerkleRoot() {
-        Queue<byte[]> txids = new LinkedBlockingQueue<>();
+    // executes transctions and returns an event list
+    public BlockStateChangeResult getStateChange(int blockHeight) {
+        List<Event> events = new ArrayList<>();
+        Queue<byte[]> txids = new LinkedList<>();
+        Queue<byte[]> txeids = new LinkedList<>();
+
+        long accumulatedFees = 0L;
+
         for (Transaction transaction : transactions) {
+            accumulatedFees += transaction.getTransactionFee();
+        }
+
+        for (Transaction transaction : transactions) {
+            List<Event> transactionEvents = transaction.getStateChange(this, blockHeight, accumulatedFees);
+            events.addAll(transactionEvents);
             txids.add(transaction.getTransactionID());
+            transactionEvents.forEach(event -> txeids.add(event.eventId()));
         }
 
-        while (txids.size() > 1) {
-            txids.add(HashUtil.sha256d(Utils.concatenate(txids.poll(), txids.poll())));
+        return new BlockStateChangeResult(txids, txeids, events);
+    }
+
+    // call transaction.verify()
+    // this does not mean that transactions are VALID
+    private boolean shallowVerifyTransactions() throws WolkenException {
+        for (Transaction transaction : transactions) {
+            if (!transaction.shallowVerify()) {
+                return false;
+            }
         }
 
-        return txids.poll();
+        return true;
     }
 
-    public void build() {
-        setMerkleRoot(calculateMerkleRoot());
+    private boolean verifyTransactions(int blockHeight) throws WolkenException {
+        long fees = 0L;
+
+        for (Transaction transaction : transactions) {
+            fees += transaction.getTransactionFee();
+        }
+
+        for (Transaction transaction : transactions) {
+            if (!transaction.verify(this, blockHeight, fees)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    public boolean verify() {
-        if (!Utils.equals(calculateMerkleRoot(), getMerkleRoot())) return false;
+    public void build(int blockHeight) {
+        // set the combined merkle root
+        setMerkleRoot(getStateChange(blockHeight).getMerkleRoot());
+    }
+
+    public boolean verify(int blockHeight) throws WolkenException {
+        // PoW check
+        if (!ChainMath.validSolution(getHashCode(), getBits())) return false;
+        // shallow transaction checks
+        if (!shallowVerifyTransactions()) return false;
+        // deeper transaction checks
+        if (!verifyTransactions(blockHeight)) return false;
+        // merkle tree checks
+        if (!Utils.equals(getStateChange(blockHeight).getMerkleRoot(), getMerkleRoot())) return false;
 
         return true;
     }
@@ -117,5 +166,22 @@ public class Block extends BlockHeader {
 
     public int getTransactionCount() {
         return transactions.size();
+    }
+
+    public void removeLastTransaction() {
+        Iterator<Transaction> transactions = this.transactions.iterator();
+        if (transactions.hasNext())
+        {
+            transactions.next();
+
+            if (!transactions.hasNext()) {
+                transactions.remove();
+            }
+        }
+    }
+
+    @Override
+    public Iterator<Transaction> iterator() {
+        return transactions.iterator();
     }
 }

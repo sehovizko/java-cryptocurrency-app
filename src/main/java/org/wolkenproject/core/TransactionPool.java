@@ -8,7 +8,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class TransactionPool {
     private PriorityHashQueue<Transaction> transactions;
     private ReentrantLock                   mutex;
-    private static final int                MaximumBlockQueueSize = 1_250_000_000;
+    private static final int                MaximumTransactionQueueSize = 1_250_000_000;
 
     public TransactionPool() {
         transactions    = new PriorityHashQueue<>(Transaction.class);
@@ -60,6 +60,45 @@ public class TransactionPool {
     public void add(Set<Transaction> transactions) {
         for (Transaction transaction : transactions) {
             this.transactions.add(transaction);
+        }
+    }
+
+    public void queueBlock(Block block) {
+        for (Transaction transaction : block) {
+            byte txid[] = transaction.getTransactionID();
+            if (transactions.containsKey(txid)) {
+                continue;
+            }
+
+            if (Context.getInstance().getDatabase().checkTransactionExists(txid)) {
+                continue;
+            }
+
+            transactions.add(transaction);
+        }
+    }
+
+    public Transaction pollTransaction() {
+        mutex.lock();
+        try {
+            // infinitely loop
+            while (!transactions.isEmpty()) {
+                // poll a transaction
+                Transaction transaction = transactions.poll();
+                byte txid[] = transaction.getTransactionID();
+
+                // if the transaction has already been added to a block then continue
+                if (Context.getInstance().getDatabase().checkTransactionExists(txid)) {
+                    continue;
+                }
+
+                // otherwise return the transaction
+                return transaction;
+            }
+
+            return null;
+        } finally {
+            mutex.unlock();
         }
     }
 }

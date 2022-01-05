@@ -2,6 +2,7 @@ package org.wolkenproject;
 
 import org.apache.commons.cli.*;
 import org.wolkenproject.core.*;
+import org.wolkenproject.core.transactions.Transaction;
 import org.wolkenproject.crypto.ec.ECKeypair;
 import org.wolkenproject.encoders.Base16;
 import org.wolkenproject.encoders.Base58;
@@ -124,6 +125,7 @@ public class Wolken {
 
         Logger.alert("force connections ${l}", connectionList);
 
-        Context context = new Context(mainDirectory, isTestNet, address, connectionList);
+        int rpcPort = 12560;
+        Context context = new Context(mainDirectory, rpcPort, isTestNet, address, connectionList);
     }
 }

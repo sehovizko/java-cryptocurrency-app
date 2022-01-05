@@ -1,20 +1,25 @@
 package org.wolkenproject.core;
 
+import com.sun.net.httpserver.HttpHandler;
 import org.wolkenproject.core.mocha.*;
 import org.wolkenproject.core.mocha.internal.ByteArray;
 import org.wolkenproject.core.mocha.internal.MochaNumber;
+import org.wolkenproject.core.transactions.Transaction;
 import org.wolkenproject.crypto.ec.RecoverableSignature;
 import org.wolkenproject.exceptions.MochaException;
 import org.wolkenproject.exceptions.WolkenException;
 import org.wolkenproject.network.*;
 import org.wolkenproject.network.messages.*;
+import org.wolkenproject.rpc.RpcServer;
 import org.wolkenproject.serialization.SerializationFactory;
 import org.wolkenproject.utils.FileService;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,20 +28,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class Context {
     private static Context instance;
 
-    private Database database;
-    private NetworkParameters networkParameters;
-    private ExecutorService threadPool;
-    private AtomicBoolean isRunning;
-    private IpAddressList ipAddressList;
-    private SerializationFactory serializationFactory;
-    private TransactionPool transactionPool;
-    private Server server;
-    private Address payList[];
-    private BlockChain blockChain;
-    private OpcodeRegister opcodeRegister;
-    private FileService fileService;
+    private Database                database;
+    private NetworkParameters       networkParameters;
+    private ExecutorService         threadPool;
+    private AtomicBoolean           isRunning;
+    private IpAddressList           ipAddressList;
+    private SerializationFactory    serializationFactory;
+    private TransactionPool         transactionPool;
+    private Server                  server;
+    private Address                 payList[];
+    private BlockChain              blockChain;
+    private OpcodeRegister          opcodeRegister;
+    private ResourceManager         resourceManager;
+    private RpcServer               rpcServer;
+    private FileService             fileService;
 
-    public Context(FileService service, boolean testNet, Address[] payList, Set<NetAddress> forceConnections) throws WolkenException, IOException {
+    public Context(FileService service, int rpcPort, boolean testNet, Address[] payList, Set<NetAddress> forceConnections) throws WolkenException, IOException {
         Context.instance = this;
         this.database = new Database(service.newFile("db"));
         this.networkParameters = new NetworkParameters(testNet);
@@ -48,6 +55,7 @@ public class Context {
         this.payList = payList;
         this.fileService = service;
         this.opcodeRegister = new OpcodeRegister();
+        this.resourceManager = new ResourceManager();
 
         Transaction.register(serializationFactory);
         serializationFactory.registerClass(RecoverableSignature.class, new RecoverableSignature());
@@ -197,16 +205,19 @@ public class Context {
         opcodeRegister.registerOp("swap14", "swap two objects (the 1st and 15th) on the stack.", 1, scope -> scope.getStack().swap(1, 15));
         opcodeRegister.registerOp("swap15", "swap two objects (the 1st and 16th) on the stack.", 1, scope -> scope.getStack().swap(1, 16));
 
-        this.blockChain = new BlockChain();
+        this.blockChain = new BlockChain(this);
         this.server = new Server(forceConnections);
 
         getThreadPool().execute(server);
         getThreadPool().execute(blockChain);
+
+        this.rpcServer = new RpcServer(this, rpcPort);
     }
 
     public void shutDown() {
         isRunning.set(false);
         server.shutdown();
+        rpcServer.stop();
         try {
             ipAddressList.save();
         } catch (IOException e) {
@@ -260,5 +271,13 @@ public class Context {
 
     public OpcodeRegister getOpcodeRegister() {
         return opcodeRegister;
+    }
+
+    public ResourceManager getResourceManager() {
+        return resourceManager;
+    }
+
+    public RpcServer getRPCServer() {
+        return rpcServer;
     }
 }

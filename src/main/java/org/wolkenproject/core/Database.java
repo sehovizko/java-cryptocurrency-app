@@ -1,6 +1,7 @@
 package org.wolkenproject.core;
 
 import org.iq80.leveldb.DB;
+import org.wolkenproject.core.transactions.Transaction;
 import org.wolkenproject.encoders.Base16;
 import org.wolkenproject.exceptions.WolkenException;
 import org.wolkenproject.utils.FileService;
@@ -25,7 +26,8 @@ public class Database {
     ChainTip                = Utils.takeApartShort((short) 2),
     BlockHeader             = Utils.takeApartShort((short) 3),
     BlockIndex              = Utils.takeApartShort((short) 4),
-    Transaction             = Utils.takeApartShort((short) 5);
+    Transaction             = Utils.takeApartShort((short) 5),
+    RejectedBlock           = Utils.takeApartShort((short) 6);
 
     public Database(FileService location) throws IOException {
         database= Iq80DBFactory.factory.open(location.newFile(".db").file(), new Options());
@@ -172,6 +174,10 @@ public class Database {
         return null;
     }
 
+    public byte[] getAccountHolder(long alias) {
+        return null;
+    }
+
     public Account getAccount(byte address[]) {
         return null;
     }
@@ -198,6 +204,10 @@ public class Database {
         return get(concatenate(Transaction, txid)) != null;
     }
 
+    public boolean checkAccountExists(long alias) {
+        return false;
+    }
+
     public boolean checkAccountExists(byte[] address) {
         return false;
     }
@@ -209,5 +219,20 @@ public class Database {
     }
 
     public void registerAlias(byte[] address, long alias) {
+    }
+
+    public void rmvAccount(byte[] address) {
+    }
+
+    public void markRejected(byte[] hash) {
+        put(Utils.concatenate(RejectedBlock, hash), new byte[] { 1 });
+    }
+
+    public boolean isRejected(byte[] hash) {
+        return get(Utils.concatenate(RejectedBlock, hash)) != null;
+    }
+
+    public Transaction findTransaction(byte[] txid) {
+        return null;
     }
 }

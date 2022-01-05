@@ -1,5 +1,6 @@
 package org.wolkenproject.network;
 
+import org.json.JSONObject;
 import org.wolkenproject.core.Context;
 import org.wolkenproject.encoders.Base16;
 import org.wolkenproject.exceptions.WolkenException;
@@ -412,5 +413,22 @@ public class Node implements Runnable {
 
     public boolean isConnected() {
         return socket.isOpen();
+    }
+
+    public JSONObject toJson() {
+        JSONObject json = new JSONObject();
+        if (versionMessage != null) {
+            json.put("versionmsg", versionMessage.toJson());
+        } else {
+            json.put("versionmsg", "null");
+        }
+        json.put("inetaddress", getNetAddress().toJson());
+        json.put("messagequeue", messages.size());
+        json.put("responsequeue", expectedResponse.size());
+        json.put("responses", respones.size());
+        json.put("firstconnected", Utils.jsonDate(firstConnected));
+        json.put("closed", isClosed);
+
+        return json;
     }
 }

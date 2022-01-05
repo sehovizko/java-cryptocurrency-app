@@ -1,5 +1,7 @@
 package org.wolkenproject.core;
 
+import org.wolkenproject.core.transactions.MintTransaction;
+import org.wolkenproject.core.transactions.Transaction;
 import org.wolkenproject.exceptions.WolkenException;
 import org.wolkenproject.serialization.SerializableI;
 import org.wolkenproject.utils.ChainMath;
@@ -13,9 +15,10 @@ import java.math.BigInteger;
 import java.util.*;
 
 public class Block extends BlockHeader implements Iterable<Transaction> {
-    private static BigInteger LargestHash = BigInteger.ONE.shiftLeft(256);
-    public static int UniqueIdentifierLength = 32;
-    private Set<Transaction>   transactions;
+    private static BigInteger       LargestHash             = BigInteger.ONE.shiftLeft(256);
+    public static int               UniqueIdentifierLength  = 32;
+    private Set<Transaction>        transactions;
+    private BlockStateChangeResult  stateChange;
 
     public Block() {
         this(new byte[32], 0);
@@ -44,25 +47,19 @@ public class Block extends BlockHeader implements Iterable<Transaction> {
     }
 
     // executes transctions and returns an event list
-    public BlockStateChangeResult getStateChange(int blockHeight) {
-        List<Event> events = new ArrayList<>();
-        Queue<byte[]> txids = new LinkedList<>();
-        Queue<byte[]> txeids = new LinkedList<>();
+    public BlockStateChangeResult getStateChange(int blockHeight) throws WolkenException {
+        if (stateChange == null) {
+            BlockStateChange blockStateChange = new BlockStateChange();
 
-        long accumulatedFees = 0L;
+            for (Transaction transaction : transactions) {
+                transaction.getStateChange(this, blockHeight, blockStateChange);
+                blockStateChange.addTransaction(transaction.getHash());
+            }
 
-        for (Transaction transaction : transactions) {
-            accumulatedFees += transaction.getTransactionFee();
+            stateChange = blockStateChange.getResult();
         }
 
-        for (Transaction transaction : transactions) {
-            List<Event> transactionEvents = transaction.getStateChange(this, blockHeight, accumulatedFees);
-            events.addAll(transactionEvents);
-            txids.add(transaction.getTransactionID());
-            transactionEvents.forEach(event -> txeids.add(event.eventId()));
-        }
-
-        return new BlockStateChangeResult(txids, txeids, events);
+        return stateChange;
     }
 
     // call transaction.verify()
@@ -93,7 +90,7 @@ public class Block extends BlockHeader implements Iterable<Transaction> {
         return true;
     }
 
-    public void build(int blockHeight) {
+    public void build(int blockHeight) throws WolkenException {
         // set the combined merkle root
         setMerkleRoot(getStateChange(blockHeight).getMerkleRoot());
     }
@@ -101,6 +98,10 @@ public class Block extends BlockHeader implements Iterable<Transaction> {
     public boolean verify(int blockHeight) throws WolkenException {
         // PoW check
         if (!ChainMath.validSolution(getHashCode(), getBits())) return false;
+        // must have at least one transaction
+        if (transactions.isEmpty()) return false;
+        // first transaction must be a minting transaction
+        if (transactions.iterator().next() instanceof MintTransaction == false) return false;
         // shallow transaction checks
         if (!shallowVerifyTransactions()) return false;
         // deeper transaction checks
@@ -183,5 +184,15 @@ public class Block extends BlockHeader implements Iterable<Transaction> {
     @Override
     public Iterator<Transaction> iterator() {
         return transactions.iterator();
+    }
+
+    public long getFees() {
+        long fees = 0L;
+
+        for (Transaction transaction : transactions) {
+            fees += transaction.getTransactionFee();
+        }
+
+        return fees;
     }
 }

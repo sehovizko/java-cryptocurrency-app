@@ -5,13 +5,17 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.wolkenproject.core.Address;
 import org.wolkenproject.core.BlockIndex;
 import org.wolkenproject.core.Context;
 import org.wolkenproject.core.transactions.Transaction;
 import org.wolkenproject.encoders.Base16;
+import org.wolkenproject.encoders.Base58;
+import org.wolkenproject.exceptions.WolkenException;
 import org.wolkenproject.network.Node;
 import org.wolkenproject.utils.Logger;
 import org.wolkenproject.utils.VoidCallableThrowsT;
+import org.wolkenproject.wallet.Wallet;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -29,6 +33,9 @@ public class RpcServer {
     private UrlPath[]           paths;
     private Set<Request>        handlers;
     private ExecutorService     executor;
+    private Wallet              wallet;
+    private byte                passphrase[];
+    private long                passphraseTimestamp;
 
     public RpcServer(Context context, int port) throws IOException {
         Logger.alert("=============================================");
@@ -82,6 +89,7 @@ public class RpcServer {
     public static void apiRequest(Messenger msg) throws IOException {
         JSONObject request = msg.getFormattedQuery();
         JSONObject response= new JSONObject();
+        String requestType = request.getString("request");
 
         if (request.getString("request").equals("close")) {
             String password = request.getString("password");
@@ -89,8 +97,138 @@ public class RpcServer {
             msg.send("application/json", response.toString().getBytes());
             Context.getInstance().shutDown();
             return;
-        }
-        else if (request.getString("request").equals("getblock")) {
+        } else if (requestType.equals("createwallet")) {
+            if (!request.has("name")) {
+                response.put("response", "failed");
+                response.put("reason", "'createwallet' command requires an argument 'name'.");
+            } else {
+                String name = request.getString("name");
+                if (Context.getInstance().getDatabase().checkWalletExists(name)) {
+                    response.put("response", "failed");
+                    response.put("reason", "a wallet with the name '" + name + "' already exists.");
+                } else {
+                    response.put("response", "success");
+                    String password = request.getString("password");
+                    byte pass[]     = password.getBytes();
+
+                    if (!request.getBoolean("encrypt")) {
+                        pass        = null;
+                    }
+
+                    try {
+                        Wallet wallet = new Wallet(name, pass);
+                        Context.getInstance().getDatabase().storeWallet(wallet);
+                        response.put("content", wallet.toJson());
+                    } catch (WolkenException e) {
+                        response.put("response", "failed");
+                        response.put("reason", e.getMessage());
+                    }
+                }
+            }
+        } else if (requestType.equals("encryptwallet")) {
+            String name = request.getString("name");
+            String pass = request.getString("password");
+
+            if (!Context.getInstance().getDatabase().checkWalletExists(name)) {
+                response.put("response", "failed");
+                response.put("reason", "wallet '" + name + "' does not exist.");
+            } else {
+                Wallet wallet = Context.getInstance().getDatabase().getWallet(name);
+                if (wallet.isEncrypted()) {
+                    response.put("response", "failed");
+                    response.put("reason", "wallet is already encrypted, use 'walletpassphrasechange' to change the passphrase.");
+                } else {
+                    try {
+                        wallet = wallet.encrypt(pass.getBytes());
+                    } catch (WolkenException e) {
+                        response.put("response", "failed");
+                        response.put("reason", e.getMessage());
+                    }
+                    Context.getInstance().getDatabase().storeWallet(wallet);
+                    response.put("response", "success");
+                }
+            }
+        } else if (requestType.equals("dumpwallet")) {
+            String name = request.getString("name");
+
+            if (!Context.getInstance().getDatabase().checkWalletExists(name)) {
+                response.put("response", "failed");
+                response.put("reason", "wallet '" + name + "' does not exist.");
+            } else {
+                Wallet wallet = Context.getInstance().getDatabase().getWallet(name);
+                response.put("response", "success");
+                response.put("content", wallet.toJson());
+            }
+        } else if (requestType.equals("walletpassphrasechange")) {
+            String name = request.getString("name");
+            String old  = request.getString("old");
+            String neu  = request.getString("new");
+
+            if (!Context.getInstance().getDatabase().checkWalletExists(name)) {
+                response.put("response", "failed");
+                response.put("reason", "wallet '" + name + "' does not exist.");
+            } else {
+                Wallet wallet   = Context.getInstance().getDatabase().getWallet(name);
+                try {
+                    wallet          = wallet.changePassphrase(old.getBytes(), neu.getBytes());
+                    response.put("response", "success");
+                    response.put("content", wallet.toJson());
+                    Context.getInstance().getDatabase().storeWallet(wallet);
+                }
+                catch (WolkenException e) {
+                    response.put("response", "failed");
+                    response.put("reason", e.getMessage());
+                }
+            }
+        } else if (requestType.equals("walletpassphrase")) {
+        } else if (requestType.equals("loadwallet")) {
+            String name = request.getString("name");
+
+            if (!Context.getInstance().getDatabase().checkWalletExists(name)) {
+                response.put("response", "failed");
+                response.put("reason", "wallet '" + name + "' does not exist.");
+            } else {
+                Context.getInstance().getRPCServer().setWallet(Context.getInstance().getDatabase().getWallet(name));
+            }
+        } else if (requestType.equals("getaccount")) {
+            String encodedAddress   = request.getString("address");
+            Address address         = null;
+
+            if (!Base58.isEncoded(encodedAddress)) {
+                response.put("response", "failed");
+                response.put("reason", "provided address '" + encodedAddress + "' is not base58 encoded.");
+            } else if (!Address.isValidAddress(Base58.decode(encodedAddress))) {
+                response.put("response", "failed");
+                response.put("reason", "address '" + encodedAddress + "' is not valid.");
+            } else if (!Context.getInstance().getDatabase().checkAccountExists((address = Address.fromFormatted(Base58.decode(encodedAddress))).getRaw())) {
+                response.put("response", "failed");
+                response.put("reason", "address '" + encodedAddress + "' does not exist.");
+            } else {
+                response.put("response", "success");
+                response.put("content", Context.getInstance().getDatabase().findAccount(address.getRaw()).toJson());
+            }
+        } else if (requestType.equals("walletfromdump")) {
+            String dump             = request.getString("dump");
+
+            try {
+                Wallet wallet           = new Wallet(dump);
+                if (Context.getInstance().getDatabase().checkWalletExists(wallet.getName())) {
+                    Wallet other        = Context.getInstance().getDatabase().getWallet(wallet.getName());
+
+                    if (wallet.equals(other)) {
+                        response.put("response", "failed");
+                        response.put("reason", "wallet already exists.");
+                    } else {
+                        response.put("response", "failed");
+                        response.put("reason", "another wawllet with the name '" + wallet.getName() + "' already exists.");
+                    }
+                } else {
+                    response.put("response", "success");
+                }
+            } catch (WolkenException e) {
+                response.put("response", "failed");
+                response.put("reason", e.getMessage());
+            }
         } else if (request.getString("request").equals("gettx")) {
         } else if (request.getString("request").equals("server")) {
             response.put("response", "success");
@@ -111,6 +249,13 @@ public class RpcServer {
         }
 
         msg.send("application/json", response.toString().getBytes());
+    }
+
+    private void setWallet(Wallet wallet) {
+        this.wallet = wallet;
+    }
+
+    private void setPassphrase(byte[] passphrase, long timeout) {
     }
 
     protected void onGet(String requestURL, VoidCallableThrowsT<Messenger, IOException> function) {
